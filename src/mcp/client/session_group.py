@@ -20,7 +20,15 @@ from typing_extensions import Self
 
 import mcp
 from mcp import types
-from mcp.client.session import ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
+from mcp.client.session import (
+    ElicitationFnT,
+    ListRootsFnT,
+    LoggingFnT,
+    MessageHandlerFnT,
+    SamplingFnT,
+    ToolInputGuardrailFnT,
+    ToolOutputGuardrailFnT,
+)
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters
 from mcp.client.streamable_http import streamable_http_client
@@ -80,6 +88,9 @@ class ClientSessionParameters:
     logging_callback: LoggingFnT | None = None
     message_handler: MessageHandlerFnT | None = None
     client_info: types.Implementation | None = None
+    tool_input_guardrails: tuple[ToolInputGuardrailFnT, ...] = ()
+    tool_output_guardrails: tuple[ToolOutputGuardrailFnT, ...] = ()
+    agent_name: str | None = None
 
 
 class ClientSessionGroup:
@@ -129,6 +140,9 @@ class ClientSessionGroup:
         self,
         exit_stack: contextlib.AsyncExitStack | None = None,
         component_name_hook: _ComponentNameHook | None = None,
+        tool_input_guardrails: tuple[ToolInputGuardrailFnT, ...] = (),
+        tool_output_guardrails: tuple[ToolOutputGuardrailFnT, ...] = (),
+        agent_name: str | None = None,
     ) -> None:
         """Initializes the MCP client."""
 
@@ -146,6 +160,9 @@ class ClientSessionGroup:
             self._owns_exit_stack = False
         self._session_exit_stacks = {}
         self._component_name_hook = component_name_hook
+        self._tool_input_guardrails = tool_input_guardrails
+        self._tool_output_guardrails = tool_output_guardrails
+        self._agent_name = agent_name
 
     async def __aenter__(self) -> Self:  # pragma: no cover
         # Enter the exit stack only if we created it ourselves
@@ -258,7 +275,15 @@ class ClientSessionGroup:
         session_params: ClientSessionParameters | None = None,
     ) -> mcp.ClientSession:
         """Connects to a single MCP server."""
-        server_info, session = await self._establish_session(server_params, session_params or ClientSessionParameters())
+        params = session_params or ClientSessionParameters()
+        if not params.tool_input_guardrails:
+            params.tool_input_guardrails = self._tool_input_guardrails
+        if not params.tool_output_guardrails:
+            params.tool_output_guardrails = self._tool_output_guardrails
+        if params.agent_name is None:
+            params.agent_name = self._agent_name
+
+        server_info, session = await self._establish_session(server_params, params)
         return await self.connect_with_session(server_info, session)
 
     async def _establish_session(
@@ -310,6 +335,9 @@ class ClientSessionGroup:
                     logging_callback=session_params.logging_callback,
                     message_handler=session_params.message_handler,
                     client_info=session_params.client_info,
+                    tool_input_guardrails=session_params.tool_input_guardrails,
+                    tool_output_guardrails=session_params.tool_output_guardrails,
+                    agent_name=session_params.agent_name,
                 )
             )
 

@@ -8,7 +8,16 @@ from typing import Any
 
 from mcp.client._memory import InMemoryTransport
 from mcp.client._transport import Transport
-from mcp.client.session import ClientSession, ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
+from mcp.client.session import (
+    ClientSession,
+    ElicitationFnT,
+    ListRootsFnT,
+    LoggingFnT,
+    MessageHandlerFnT,
+    SamplingFnT,
+    ToolInputGuardrailFnT,
+    ToolOutputGuardrailFnT,
+)
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server import Server
 from mcp.server.mcpserver import MCPServer
@@ -95,6 +104,15 @@ class Client:
     elicitation_callback: ElicitationFnT | None = None
     """Callback for handling elicitation requests."""
 
+    tool_input_guardrails: tuple[ToolInputGuardrailFnT, ...] = ()
+    """Guardrails that can allow or block outgoing tool calls."""
+
+    tool_output_guardrails: tuple[ToolOutputGuardrailFnT, ...] = ()
+    """Guardrails that can allow or block incoming tool results."""
+
+    agent_name: str | None = None
+    """Optional agent name passed to tool guardrail callables."""
+
     _session: ClientSession | None = field(init=False, default=None)
     _exit_stack: AsyncExitStack | None = field(init=False, default=None)
     _transport: Transport = field(init=False)
@@ -126,6 +144,9 @@ class Client:
                     message_handler=self.message_handler,
                     client_info=self.client_info,
                     elicitation_callback=self.elicitation_callback,
+                    tool_input_guardrails=self.tool_input_guardrails,
+                    tool_output_guardrails=self.tool_output_guardrails,
+                    agent_name=self.agent_name,
                 )
             )
 

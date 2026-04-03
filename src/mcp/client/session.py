@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 import anyio.lowlevel
@@ -52,6 +53,22 @@ class MessageHandlerFnT(Protocol):
         self,
         message: RequestResponder[types.ServerRequest, types.ClientResult] | types.ServerNotification | Exception,
     ) -> None: ...  # pragma: no branch
+
+
+class ToolInputGuardrailFnT(Protocol):
+    def __call__(
+        self,
+        tool_call_data: types.CallToolRequestParams,
+        agent_name: str | None,
+    ) -> bool: ...
+
+
+class ToolOutputGuardrailFnT(Protocol):
+    def __call__(
+        self,
+        tool_result: types.CallToolResult,
+        agent_name: str | None,
+    ) -> bool: ...
 
 
 async def _default_message_handler(
@@ -121,6 +138,9 @@ class ClientSession(
         *,
         sampling_capabilities: types.SamplingCapability | None = None,
         experimental_task_handlers: ExperimentalTaskHandlers | None = None,
+        tool_input_guardrails: Sequence[ToolInputGuardrailFnT] | None = None,
+        tool_output_guardrails: Sequence[ToolOutputGuardrailFnT] | None = None,
+        agent_name: str | None = None,
     ) -> None:
         super().__init__(read_stream, write_stream, read_timeout_seconds=read_timeout_seconds)
         self._client_info = client_info or DEFAULT_CLIENT_INFO
@@ -133,6 +153,9 @@ class ClientSession(
         self._tool_output_schemas: dict[str, dict[str, Any] | None] = {}
         self._initialize_result: types.InitializeResult | None = None
         self._experimental_features: ExperimentalClientFeatures | None = None
+        self._tool_input_guardrails = tuple(tool_input_guardrails or ())
+        self._tool_output_guardrails = tuple(tool_output_guardrails or ())
+        self._agent_name = agent_name
 
         # Experimental: Task handlers (use defaults if not provided)
         self._task_handlers = experimental_task_handlers or ExperimentalTaskHandlers()
@@ -307,9 +330,13 @@ class ClientSession(
     ) -> types.CallToolResult:
         """Send a tools/call request with optional progress callback support."""
 
+        request_params = types.CallToolRequestParams(name=name, arguments=arguments, _meta=meta)
+        if not self._check_tool_input_guardrails(request_params):
+            raise RuntimeError(f"Tool input guardrail blocked tool call: {name}")
+
         result = await self.send_request(
             types.CallToolRequest(
-                params=types.CallToolRequestParams(name=name, arguments=arguments, _meta=meta),
+                params=request_params,
             ),
             types.CallToolResult,
             request_read_timeout_seconds=read_timeout_seconds,
@@ -319,7 +346,22 @@ class ClientSession(
         if not result.is_error:
             await self._validate_tool_result(name, result)
 
+        if not self._check_tool_output_guardrails(result):
+            raise RuntimeError(f"Tool output guardrail blocked tool result: {name}")
+
         return result
+
+    def _check_tool_input_guardrails(self, tool_call_data: types.CallToolRequestParams) -> bool:
+        for guardrail in self._tool_input_guardrails:
+            if not guardrail(tool_call_data, self._agent_name):
+                return False
+        return True
+
+    def _check_tool_output_guardrails(self, tool_result: types.CallToolResult) -> bool:
+        for guardrail in self._tool_output_guardrails:
+            if not guardrail(tool_result, self._agent_name):
+                return False
+        return True
 
     async def _validate_tool_result(self, name: str, result: types.CallToolResult) -> None:
         """Validate the structured content of a tool result against its output schema."""

@@ -67,6 +67,7 @@
       - [Structured Output Support](#structured-output-support)
     - [Pagination (Advanced)](#pagination-advanced)
     - [Writing MCP Clients](#writing-mcp-clients)
+    - [Tool Guardrails For Agent-Style Clients](#tool-guardrails-for-agent-style-clients)
     - [Client Display Utilities](#client-display-utilities)
     - [OAuth Authentication for Clients](#oauth-authentication-for-clients)
     - [Parsing Tool Results](#parsing-tool-results)
@@ -2236,6 +2237,43 @@ if __name__ == "__main__":
 
 _Full example: [examples/snippets/clients/stdio_client.py](https://github.com/modelcontextprotocol/python-sdk/blob/main/examples/snippets/clients/stdio_client.py)_
 <!-- /snippet-source -->
+
+### Tool Guardrails For Agent-Style Clients
+
+You can pass guardrails to `ClientSession`, `Client`, and `ClientSessionGroup` constructors using:
+
+- `tool_input_guardrails` (optional)
+- `tool_output_guardrails` (optional)
+- `agent_name` (optional context passed to each guardrail)
+
+`tool_input_guardrails` receives `(tool_call_data, agent_name)` and must return `True` to allow a call or `False` to block.
+
+`tool_output_guardrails` receives `(tool_result, agent_name)` and must return `True` to allow a result or `False` to block.
+
+Both arguments accept multiple guardrail functions, executed in order.
+
+```python
+from mcp import Client
+from mcp.types import CallToolRequestParams, CallToolResult
+
+
+def allow_only_safe_tools(tool_call_data: CallToolRequestParams, agent_name: str | None) -> bool:
+    allowed_tools = {"search_docs", "read_resource"}
+    return tool_call_data.name in allowed_tools
+
+
+def block_error_results(tool_result: CallToolResult, agent_name: str | None) -> bool:
+    return not tool_result.is_error
+
+
+async with Client(
+    server,
+    agent_name="research-agent",
+    tool_input_guardrails=(allow_only_safe_tools,),
+    tool_output_guardrails=(block_error_results,),
+) as client:
+    await client.call_tool("search_docs", {"query": "MCP guardrails"})
+```
 
 Clients can also connect using [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http):
 

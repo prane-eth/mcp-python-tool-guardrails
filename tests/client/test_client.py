@@ -353,3 +353,103 @@ async def test_context_propagation():
     assert result.content[0].text == "client_value", (  # type: ignore[union-attr]
         "Server handler did not see the sender's contextvars.Context"
     )
+
+
+async def test_client_tool_input_guardrail_blocks_tool_call():
+    """Input guardrails can block tool calls before they are sent."""
+    call_count = 0
+    captured_agent_names: list[str | None] = []
+
+    def _input_guardrail(tool_call_data: types.CallToolRequestParams, agent_name: str | None) -> bool:
+        captured_agent_names.append(agent_name)
+        assert tool_call_data.name == "greet"
+        assert tool_call_data.arguments == {"name": "World"}
+        return False
+
+    server = MCPServer("test")
+
+    @server.tool()
+    def greet(name: str) -> str:
+        nonlocal call_count
+        call_count += 1
+        return f"Hello, {name}!"
+
+    async with Client(
+        server,
+        agent_name="qa-agent",
+        tool_input_guardrails=(_input_guardrail,),
+    ) as client:
+        with pytest.raises(RuntimeError, match="Tool input guardrail blocked tool call: greet"):
+            await client.call_tool("greet", {"name": "World"})
+
+    assert call_count == 0
+    assert captured_agent_names == ["qa-agent"]
+
+
+async def test_client_tool_output_guardrail_blocks_tool_result():
+    """Output guardrails can block tool results after tool execution."""
+    captured_agent_names: list[str | None] = []
+
+    def _output_guardrail(tool_result: types.CallToolResult, agent_name: str | None) -> bool:
+        captured_agent_names.append(agent_name)
+        assert tool_result.structured_content == {"result": "Hello, World!"}
+        return False
+
+    server = MCPServer("test")
+
+    @server.tool()
+    def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    async with Client(
+        server,
+        agent_name="qa-agent",
+        tool_output_guardrails=(_output_guardrail,),
+    ) as client:
+        with pytest.raises(RuntimeError, match="Tool output guardrail blocked tool result: greet"):
+            await client.call_tool("greet", {"name": "World"})
+
+    assert captured_agent_names == ["qa-agent"]
+
+
+async def test_client_tool_guardrails_support_multiple_functions():
+    """Multiple input and output guardrails are supported and applied in order."""
+    guardrail_events: list[str] = []
+
+    def _input_guardrail_one(tool_call_data: types.CallToolRequestParams, agent_name: str | None) -> bool:
+        guardrail_events.append(f"in1:{tool_call_data.name}:{agent_name}")
+        return True
+
+    def _input_guardrail_two(tool_call_data: types.CallToolRequestParams, agent_name: str | None) -> bool:
+        guardrail_events.append(f"in2:{tool_call_data.name}:{agent_name}")
+        return True
+
+    def _output_guardrail_one(tool_result: types.CallToolResult, agent_name: str | None) -> bool:
+        guardrail_events.append(f"out1:{agent_name}")
+        return True
+
+    def _output_guardrail_two(tool_result: types.CallToolResult, agent_name: str | None) -> bool:
+        guardrail_events.append(f"out2:{agent_name}")
+        return True
+
+    server = MCPServer("test")
+
+    @server.tool()
+    def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    async with Client(
+        server,
+        agent_name="qa-agent",
+        tool_input_guardrails=(_input_guardrail_one, _input_guardrail_two),
+        tool_output_guardrails=(_output_guardrail_one, _output_guardrail_two),
+    ) as client:
+        result = await client.call_tool("greet", {"name": "World"})
+
+    assert result.structured_content == {"result": "Hello, World!"}
+    assert guardrail_events == [
+        "in1:greet:qa-agent",
+        "in2:greet:qa-agent",
+        "out1:qa-agent",
+        "out2:qa-agent",
+    ]

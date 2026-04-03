@@ -87,6 +87,45 @@ async def test_client_session_group_call_tool():
 
 
 @pytest.mark.anyio
+async def test_client_session_group_connect_to_server_uses_group_guardrails_by_default():
+    """Group-level guardrails are applied when per-session params do not override them."""
+
+    def _input_guardrail(
+        tool_call_data: types.CallToolRequestParams,
+        agent_name: str | None,
+    ) -> bool:  # pragma: no cover
+        return True
+
+    def _output_guardrail(
+        tool_result: types.CallToolResult,
+        agent_name: str | None,
+    ) -> bool:  # pragma: no cover
+        return True
+
+    mock_server_info = types.Implementation(name="server", version="1.0.0")
+    mock_session = mock.AsyncMock(spec=mcp.ClientSession)
+    group = ClientSessionGroup(
+        tool_input_guardrails=(_input_guardrail,),
+        tool_output_guardrails=(_output_guardrail,),
+        agent_name="group-agent",
+    )
+
+    async def mock_aggregate_components(server_info: types.Implementation, session: mcp.ClientSession) -> None:
+        return None
+
+    with (
+        mock.patch.object(group, "_establish_session", return_value=(mock_server_info, mock_session)) as establish_mock,
+        mock.patch.object(group, "_aggregate_components", side_effect=mock_aggregate_components),
+    ):
+        await group.connect_to_server(StdioServerParameters(command="test"))
+
+    passed_params = establish_mock.call_args.args[1]
+    assert passed_params.tool_input_guardrails == (_input_guardrail,)
+    assert passed_params.tool_output_guardrails == (_output_guardrail,)
+    assert passed_params.agent_name == "group-agent"
+
+
+@pytest.mark.anyio
 async def test_client_session_group_connect_to_server(mock_exit_stack: contextlib.AsyncExitStack):
     """Test connecting to a server and aggregating components."""
     # --- Mock Dependencies ---
@@ -378,6 +417,9 @@ async def test_client_session_group_establish_session_parameterized(
                 logging_callback=None,
                 message_handler=None,
                 client_info=None,
+                tool_input_guardrails=(),
+                tool_output_guardrails=(),
+                agent_name=None,
             )
             mock_raw_session_cm.__aenter__.assert_awaited_once()
             mock_entered_session.initialize.assert_awaited_once()
